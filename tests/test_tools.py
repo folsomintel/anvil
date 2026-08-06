@@ -41,10 +41,10 @@ def test_read_file_numbers_lines(ctx: Context):
     assert result.fields["content"].splitlines()[0] == "1| def clamp(value, lower, upper):"
 
 
-def test_read_file_truncates_long_files(ctx: Context):
-    ctx.limits.max_file_lines = 2
+def test_read_file_clips_against_the_token_ceiling(ctx: Context):
+    ctx.limits.max_result_tokens = 12
     result = read_file(ctx, "pkg/math_utils.py")
-    assert len(result.fields["content"].splitlines()) == 2
+    assert ctx.budget.count(result.fields["content"]) <= 12
     assert "read_range" in result.fields["truncated"]
 
 

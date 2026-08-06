@@ -147,6 +147,59 @@ def test_episode_serializes_for_training_data(sandbox: Path):
     assert data["transcript"][0]["role"] == "system"
 
 
+def test_a_full_repair_episode(sandbox: Path):
+    """the mvp claim: read, patch, verify green, finish."""
+    model = ScriptedModel(
+        [
+            call("run_tests"),
+            call("read_file", path="pkg/math_utils.py"),
+            "<tool>\nname: apply_patch\npath: pkg/math_utils.py\nfind: |\n"
+            "      return value\nreplace: |\n"
+            "      if value > upper:\n          return upper\n      return value\n</tool>",
+            call("run_tests"),
+            call("finish", summary="clamped the upper bound"),
+        ]
+    )
+    episode = controller(sandbox).run(model, "make the clamp tests pass")
+    assert [step.status for step in episode.steps] == [
+        Status.FAILED,
+        Status.OK,
+        Status.OK,
+        Status.OK,
+        Status.OK,
+    ]
+    assert episode.stop_reason == Stop.FINISHED
+    assert episode.tests_passing is True
+    assert episode.changed_files == ["pkg/math_utils.py"]
+
+
+def test_a_bad_patch_can_be_reverted(sandbox: Path):
+    model = ScriptedModel(
+        [
+            "<tool>\nname: write_file\npath: pkg/math_utils.py\ncontent: |\n  garbage\n</tool>",
+            call("run_tests"),
+            call("revert_changes"),
+            call("run_tests"),
+        ]
+    )
+    episode = controller(sandbox, max_steps=4).run(model, "fix clamp")
+    assert episode.steps[1].status == Status.FAILED
+    assert episode.steps[2].status == Status.OK
+    # back to the original failure, not the garbage one
+    assert episode.changed_files == []
+
+
+def test_the_transcript_is_trimmed_to_the_window(sandbox: Path):
+    from harness import Budget
+
+    model = ScriptedModel([call("list_files")] * 4 + [call("finish", summary="ok")])
+    ctl = Controller(sandbox, config=ControllerConfig(max_repeats=99), budget=Budget(window=256))
+    episode = ctl.run(model, "look around")
+    assert episode.dropped_turns > 0
+    # whatever was dropped, the model always saw the task
+    assert all(len(seen) >= 2 and seen[1]["content"].startswith("task:") for seen in model.calls)
+
+
 def test_the_loop_is_deterministic(sandbox: Path):
     def episode():
         model = ScriptedModel(

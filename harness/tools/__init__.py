@@ -1,15 +1,16 @@
 """tool registry assembly.
 
-the surface stays deliberately small. new tools are added by appending a module
-to MODULES, which is where the fs mutation, structural, and lsp groups will go.
+the surface stays deliberately small. at a 512 token window every signature in
+the prompt costs context the model could have spent on the task, so the
+structural and lsp groups are a later curriculum stage, not a default.
 """
 
 from __future__ import annotations
 
 from ..schema import Registry
-from . import control, fs, runtime
+from . import control, edit, fs, runtime
 
-MODULES = (fs, runtime, control)
+MODULES = (fs, edit, runtime, control)
 
 
 def build_registry() -> Registry:

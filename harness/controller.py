@@ -14,12 +14,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .budget import Budget
 from .context import Context, Limits
 from .errors import HarnessError, ParseError
 from .model import Message, Model
 from .prompt import build_system_prompt, build_task_prompt
 from .render import Status, ToolResult, render_result
 from .schema import Registry, ToolCall
+from .snapshot import Snapshot
 from .tools import build_registry
 from .workspace import Workspace
 
@@ -40,6 +42,9 @@ class ControllerConfig:
     max_repeats: int = 2
     # rejections in a row before the episode is abandoned as a loop
     max_rejections: int = 2
+    # signatures-only prompt. the trained model does not need the format
+    # explained to it, and at 512 tokens the explanation does not fit
+    compact_prompt: bool = False
 
 
 @dataclass
@@ -62,6 +67,9 @@ class Episode:
     summary: str = ""
     transcript: list[Message] = field(default_factory=list)
     tests_passing: bool | None = None
+    # turns the budget had to drop to keep the transcript inside the window
+    dropped_turns: int = 0
+    changed_files: list[str] = field(default_factory=list)
 
     @property
     def finished(self) -> bool:
@@ -73,6 +81,8 @@ class Episode:
             "stop_reason": self.stop_reason,
             "summary": self.summary,
             "tests_passing": self.tests_passing,
+            "dropped_turns": self.dropped_turns,
+            "changed_files": self.changed_files,
             "steps": [asdict(step) for step in self.steps],
             "transcript": self.transcript,
         }
@@ -85,25 +95,36 @@ class Controller:
         registry: Registry | None = None,
         config: ControllerConfig | None = None,
         limits: Limits | None = None,
+        budget: Budget | None = None,
     ) -> None:
         if not isinstance(workspace, Workspace):
             workspace = Workspace(Path(workspace))
         self.registry = registry or build_registry()
         self.config = config or ControllerConfig()
-        self.ctx = Context(workspace=workspace, limits=limits or Limits())
+        self.ctx = Context(
+            workspace=workspace,
+            limits=limits or Limits(),
+            budget=budget or Budget(),
+        )
 
     def run(self, model: Model, task: str) -> Episode:
+        system = build_system_prompt(self.registry, compact=self.config.compact_prompt)
         messages: list[Message] = [
-            {"role": "system", "content": build_system_prompt(self.registry)},
+            {"role": "system", "content": system},
             {"role": "user", "content": build_task_prompt(task)},
         ]
+        # the undo point for revert_changes, and the base for diff
+        self.ctx.baseline = Snapshot.take(self.ctx.workspace)
         episode = Episode(task=task, transcript=messages)
         seen: Counter[tuple] = Counter()
         consecutive_errors = 0
         consecutive_rejections = 0
 
         for index in range(self.config.max_steps):
-            output = model.step(messages)
+            # the model only ever sees what fits in its window
+            visible, dropped = self.ctx.budget.fit(messages)
+            episode.dropped_turns += dropped
+            output = model.step(visible)
             messages.append({"role": "assistant", "content": output})
 
             call, result = self._resolve(output, seen)
@@ -139,6 +160,10 @@ class Controller:
                 consecutive_errors = 0
 
         episode.tests_passing = self.ctx.state.get("tests_passing")
+        if self.ctx.baseline is not None:
+            episode.changed_files = [
+                str(change["path"]) for change in self.ctx.baseline.diff(self.ctx.workspace)
+            ]
         return episode
 
     def _resolve(
