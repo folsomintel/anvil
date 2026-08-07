@@ -175,6 +175,15 @@ class ModelConfig:
                 ) from None
         return cls(**spec).validate()
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to a plain dict."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ModelConfig":
+        """Build from a plain dict."""
+        return cls(**data)
+
     @classmethod
     def from_json(cls, text: str) -> "modelconfig":
         """Build from a JSON string."""
@@ -185,7 +194,7 @@ class ModelConfig:
         return json.dumps(self.to_dict(), indent=2)
 
     def save_json(self, path: str | Path) -> Path:
-     """Write the config to `path` as JSON. Returns the resolved path."""
+        """Write the config to `path` as JSON. Returns the resolved path."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(self.to_json(), encoding="utf-8")
