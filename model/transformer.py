@@ -166,6 +166,30 @@ class CausalSelfAttention(nn.Module):
             is_causal=is_causal,
         )
 
-        out = out.transpose(1, 2).contiguous().view(B, T, -1)
-        out = self.resid_dropout(self.o_proj(out))
-        return out, present
+        out = out.transpose(1, 2).contiguous.view(B, T, self.n_heads * self.head_dim)
+
+        return self.resid_dropout(self.o_proj(out)), present
+
+class SwiGluMlp(nn.Module):
+    """
+    The per-token feed-forward network. Attention moves information *between* tokens;
+    this block does the thinking *within* each token, at once.
+
+    A plain MLP is down(act(up(x))). SwiGLU adds a second parallel projection acting as a learned gate:
+
+        down (silu(gate(x)) * up(x) )
+
+    where silu(z) = z * sigmoid, a smooth ReLu. The elementwise product lets the network dial each hidden channel up or down
+    per token, a soft learned "should a feature fire here?". At equal parameter count it reliably beats a plain ReLU MLP. Which seems to be why LLama uses it.
+    """
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        self.gate_proj = nn.Linear(config.d_model, config.d_ff, bias=config.bias)
+        self.up_proj = nn.Linear(config.d_model, config.d_ff, bias=config.bias)
+        self.down_proj = nn.Linear(config.d_ff, config.d_model, bias=config.bias)
+
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gated = F.silu(self.gate_proj(x)) * self.up_proj(x)
+        return self.dropout(self.down_proj(gated))
